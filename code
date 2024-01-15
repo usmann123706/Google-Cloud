@@ -1,0 +1,149 @@
+#Checking impact of start_station_name
+SELECT
+  start_station_name,
+  AVG(duration) AS duration
+FROM
+  `bigquery-public-data`.london_bicycles.cycle_hire
+GROUP BY
+  start_station_name
+
+#checking the impact of day of week
+SELECT
+  EXTRACT(dayofweek
+  FROM
+    start_date) AS dayofweek,
+  AVG(duration) AS duration
+FROM
+  `bigquery-public-data`.london_bicycles.cycle_hire
+GROUP BY
+  dayofweek
+
+#checking the impact of hour of day
+SELECT
+  EXTRACT(hour
+  FROM
+    start_date) AS hourofday,
+  AVG(duration) AS duration
+FROM
+  `bigquery-public-data`.london_bicycles.cycle_hire
+GROUP BY
+  hourofday
+
+#checking the impact of number of bycycles
+SELECT
+  bikes_count,
+  AVG(duration) AS duration
+FROM
+  `bigquery-public-data`.london_bicycles.cycle_hire
+JOIN
+  `bigquery-public-data`.london_bicycles.cycle_stations
+ON
+  cycle_hire.start_station_name = cycle_stations.name
+GROUP BY
+  bikes_count
+
+#create training dataset
+SELECT
+  duration,
+  start_station_name,
+  CAST(EXTRACT(dayofweek
+    FROM
+      start_date) AS STRING) AS dayofweek, #Feature columns have to be either numeric (INT64, FLOAT64, etc.) or categorical (STRING)
+  CAST(EXTRACT(hour
+    FROM
+      start_date) AS STRING) AS hourofday
+FROM
+  `bigquery-public-data`.london_bicycles.cycle_hire
+
+#create a moder
+CREATE OR REPLACE MODEL
+  bike_model.model
+OPTIONS
+  (input_label_cols=['duration'], #duration is the target variable
+    model_type='linear_reg') AS
+SELECT
+  duration,
+  start_station_name,
+  CAST(EXTRACT(dayofweek
+    FROM
+      start_date) AS STRING) AS dayofweek,
+  CAST(EXTRACT(hour
+    FROM
+      start_date) AS STRING) AS hourofday
+FROM
+  `bigquery-public-data`.london_bicycles.cycle_hire
+  WHERE `duration` IS NOT NULL
+
+#model metrics
+SELECT * FROM ML.EVALUATE(MODEL `bike_model.model`)
+
+#Feature engineering
+CREATE OR REPLACE MODEL
+  bike_model.model_bucketized
+OPTIONS
+  (input_label_cols=['duration'],
+    model_type='linear_reg') AS
+SELECT
+  duration,
+  start_station_name,
+IF
+  (EXTRACT(dayofweek
+    FROM
+      start_date) BETWEEN 2 AND 6,
+    'weekday',
+    'weekend') AS dayofweek,
+  ML.BUCKETIZE(EXTRACT(hour
+    FROM
+      start_date),
+    [5, 10, 17]) AS hourofday
+FROM
+  `bigquery-public-data`.london_bicycles.cycle_hire
+  WHERE `duration` IS NOT NULL
+
+#bigquery model with transform clause
+CREATE OR REPLACE MODEL
+  bike_model.model_bucketized TRANSFORM(* EXCEPT(start_date),
+  IF
+    (EXTRACT(dayofweek
+      FROM
+        start_date) BETWEEN 2 AND 6,
+      'weekday',
+      'weekend') AS dayofweek,
+    ML.BUCKETIZE(EXTRACT(HOUR
+      FROM
+        start_date),
+      [5, 10, 17]) AS hourofday )
+OPTIONS
+  (input_label_cols=['duration'],
+    model_type='linear_reg') AS
+SELECT
+  duration,
+  start_station_name,
+  start_date
+FROM
+  `bigquery-public-data`.london_bicycles.cycle_hire
+  WHERE `duration` IS NOT NULL
+
+#make prediction
+SELECT
+  *
+FROM
+  ML.PREDICT(MODEL bike_model.model_bucketized,
+    (
+    SELECT
+      'Park Lane , Hyde Park' AS start_station_name,
+      CURRENT_TIMESTAMP() AS start_date) )
+
+#batch prediction
+SELECT
+  *
+FROM
+  ML.PREDICT(MODEL bike_model.model_bucketized,
+    (
+    SELECT
+      start_station_name,
+      start_date
+    FROM
+      `bigquery-public-data`.london_bicycles.cycle_hire
+    LIMIT
+      100) )
